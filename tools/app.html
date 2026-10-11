@@ -1,0 +1,503 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="営業日">
+<meta name="theme-color" content="#E4E4E4">
+<title>高太郎 営業日カレンダー</title>
+<style>
+  /* カレンダー用のフォント(Noto Sans / Noto Sans JP の必要な文字だけ。tools/build.py が埋め込む)
+     Noto Sans, Noto Sans JP: Copyright Google LLC / Adobe. SIL Open Font License 1.1 (https://openfontlicense.org) */
+/*__FONTS__*/
+
+  :root {
+    --bg: #E4E4E4;
+    --panel: #F4F4F4;
+    --ink: #2B2B2E;
+    --sub: #6B6B70;
+    --line: #C9C9CC;
+    --accent: #D9434D;
+    --accent-ink: #FFFFFF;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; background: var(--bg); color: var(--ink); }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Hiragino Sans", "Noto Sans JP", sans-serif;
+    padding: max(12px, env(safe-area-inset-top)) max(16px, env(safe-area-inset-right))
+             max(20px, env(safe-area-inset-bottom)) max(16px, env(safe-area-inset-left));
+  }
+  main { max-width: 760px; margin: 0 auto; }
+  h1 { font-size: 15px; font-weight: 600; margin: 4px 0 12px; color: var(--sub); letter-spacing: .04em; }
+
+  .pickers { display: flex; gap: 10px; margin-bottom: 12px; }
+  .picker {
+    position: relative; display: flex; align-items: center; gap: 6px;
+    background: #fff; border: 1px solid var(--line); border-radius: 10px;
+    padding: 0 12px; height: 48px;
+  }
+  .picker select {
+    appearance: none; -webkit-appearance: none; border: 0; background: transparent;
+    font: inherit; font-size: 20px; font-weight: 600; color: var(--ink);
+    padding: 0 18px 0 0; height: 100%; outline: none;
+  }
+  .picker::after {
+    content: ""; position: absolute; right: 34px; top: 50%; margin-top: -3px;
+    border: 6px solid transparent; border-top-color: var(--sub); border-bottom: 0;
+    pointer-events: none;
+  }
+  .picker span { font-size: 16px; color: var(--sub); }
+
+  .sheet {
+    background: #fff; border-radius: 6px; overflow: hidden;
+    box-shadow: 0 1px 2px rgba(0,0,0,.08), 0 4px 16px rgba(0,0,0,.06);
+  }
+  canvas { display: block; width: 100%; height: auto; touch-action: manipulation; cursor: pointer; }
+  .hint { font-size: 13px; color: var(--sub); margin: 8px 2px 16px; line-height: 1.5; }
+
+  .actions { display: grid; grid-template-columns: 2fr 1fr; gap: 10px; }
+  button {
+    font: inherit; border-radius: 12px; height: 54px; font-size: 17px; font-weight: 600;
+    border: 1px solid var(--line); background: var(--panel); color: var(--ink); cursor: pointer;
+  }
+  button:active { transform: translateY(1px); filter: brightness(.96); }
+  button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+  .tools { display: flex; gap: 10px; margin-top: 10px; }
+  .tools button { flex: 1; height: 44px; font-size: 15px; font-weight: 500; background: transparent; }
+
+  .toast {
+    position: fixed; left: 50%; bottom: calc(24px + env(safe-area-inset-bottom));
+    transform: translate(-50%, 20px); opacity: 0; transition: .2s;
+    background: rgba(30,30,32,.92); color: #fff; padding: 10px 16px; border-radius: 10px;
+    font-size: 15px; pointer-events: none; white-space: nowrap;
+  }
+  .toast.show { opacity: 1; transform: translate(-50%, 0); }
+</style>
+</head>
+<body>
+<main>
+  <h1>高太郎 営業日カレンダー</h1>
+  <div class="pickers">
+    <label class="picker"><select id="year" aria-label="年"></select><span>年</span></label>
+    <label class="picker"><select id="month" aria-label="月"></select><span>月</span></label>
+  </div>
+  <div class="sheet"><canvas id="cal" width="1440" height="1104" aria-label="カレンダーのプレビュー。日付をタップすると休みの印が付きます"></canvas></div>
+  <p class="hint">日付をタップすると「休」が付きます。もう一度タップで消えます。</p>
+  <div class="actions">
+    <button class="primary" id="share">共有・保存</button>
+    <button id="copy">コピー</button>
+  </div>
+  <div class="tools">
+    <button id="redraw">マークを描き直す</button>
+    <button id="reset">この月をやり直す</button>
+  </div>
+</main>
+<div class="toast" id="toast"></div>
+
+<script>
+'use strict';
+// 手書きの「休」マーク(tools/extract_marks.py で 10月・11月のスキャンから切り出したもの)
+const MARKS = /*__MARKS__*/null;
+// 店名ロゴ(黒い文字だけ)と住所・電話番号。tools/extract_logo.py が pptx の p.4・p.5 から作る
+const FOOTER = /*__FOOTER__*/null;
+
+// ---- 見た目の設定(基準座標 = 934×712。サンプルのスキャンを測った値) ----
+const BASE = { W: 934, H: 716 };
+const G = MARKS.base;                 // 格子: x0 列の左端, cp 列の間隔, w 罫線の長さ, y0 見出しの罫線, rp 行の間隔
+const OUT_W = 1440;                   // 書き出し幅(Instagram 向け)
+const K = OUT_W / BASE.W;
+const LATIN = '"KCal Sans", "Helvetica Neue", Arial, sans-serif';
+const JP = '"KCal JP", "Hiragino Sans", "Hiragino Kaku Gothic ProN", sans-serif';
+const COLOR = {
+  text: '#46474D',
+  sun: '#D2646D',
+  sat: '#4A5A9E',
+  other: '#8E8E8E',
+  rule: '#9C9C9C',
+  ink: '#E84C55',
+  footer: '#000000',
+};
+const REGULAR_CLOSED = [1];           // 定休日の曜日(0=日 … 6=土)。月曜
+const WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const MONTH_EN = ['January', 'February', 'March', 'April', 'May', 'June', 'July',
+  'August', 'September', 'October', 'November', 'December'];
+
+// ---- 祝日 ----
+function nthMonday(y, m, n) {
+  const first = new Date(y, m - 1, 1).getDay();
+  return 1 + ((8 - first) % 7) + (n - 1) * 7;
+}
+function holidays(y) {
+  const h = new Map();
+  const put = (m, d, name) => h.set(key(y, m, d), name);
+  put(1, 1, '元日');
+  put(1, nthMonday(y, 1, 2), '成人の日');
+  put(2, 11, '建国記念の日');
+  put(2, 23, '天皇誕生日');
+  put(3, Math.floor(20.8431 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4)), '春分の日');
+  put(4, 29, '昭和の日');
+  put(5, 3, '憲法記念日');
+  put(5, 4, 'みどりの日');
+  put(5, 5, 'こどもの日');
+  put(7, nthMonday(y, 7, 3), '海の日');
+  put(8, 11, '山の日');
+  put(9, nthMonday(y, 9, 3), '敬老の日');
+  put(9, Math.floor(23.2488 + 0.242194 * (y - 1980) - Math.floor((y - 1980) / 4)), '秋分の日');
+  put(10, nthMonday(y, 10, 2), 'スポーツの日');
+  put(11, 3, '文化の日');
+  put(11, 23, '勤労感謝の日');
+  const base = [...h.keys()];
+  // 国民の休日: 祝日に挟まれた平日
+  for (let t = new Date(y, 0, 2); t.getFullYear() === y; t.setDate(t.getDate() + 1)) {
+    const k = dkey(t);
+    if (h.has(k)) continue;
+    const p = new Date(t); p.setDate(p.getDate() - 1);
+    const n = new Date(t); n.setDate(n.getDate() + 1);
+    if (h.has(dkey(p)) && h.has(dkey(n)) && t.getDay() !== 0) h.set(k, '国民の休日');
+  }
+  // 振替休日: 日曜の祝日の後、最初の祝日でない日
+  for (const k of base) {
+    const t = parse(k);
+    if (t.getDay() !== 0) continue;
+    do t.setDate(t.getDate() + 1); while (h.has(dkey(t)));
+    h.set(dkey(t), '振替休日');
+  }
+  return h;
+}
+const holidayCache = new Map();
+function holidayName(d) {
+  const y = d.getFullYear();
+  if (!holidayCache.has(y)) holidayCache.set(y, holidays(y));
+  return holidayCache.get(y).get(dkey(d)) || '';
+}
+
+// ---- 日付 ----
+const pad = n => String(n).padStart(2, '0');
+const key = (y, m, d) => `${y}-${pad(m)}-${pad(d)}`;
+const dkey = t => key(t.getFullYear(), t.getMonth() + 1, t.getDate());
+const parse = k => { const [y, m, d] = k.split('-').map(Number); return new Date(y, m - 1, d); };
+const mkey = (y, m) => `${y}-${pad(m)}`;
+
+// 6週×7日のマス(日曜始まり)
+function gridDates(y, m) {
+  const first = new Date(y, m - 1, 1);
+  const start = new Date(y, m - 1, 1 - first.getDay());
+  const out = [];
+  for (let i = 0; i < 42; i++) {
+    const t = new Date(start); t.setDate(start.getDate() + i);
+    out.push({ date: t, key: dkey(t), c: i % 7, r: Math.floor(i / 7), inMonth: t.getMonth() === m - 1 });
+  }
+  return out;
+}
+
+// ---- 保存 ----
+const STORE = 'kotaro-calendar-v2';
+let store = { months: {} };
+try { store = JSON.parse(localStorage.getItem(STORE)) || store; } catch (e) { /* 使えない環境ではその場限り */ }
+function save() { try { localStorage.setItem(STORE, JSON.stringify(store)); } catch (e) { } }
+
+// ---- マークの割り当て ----
+const rand = (a, b) => a + Math.random() * (b - a);
+function jitter(p) {
+  return { p, rot: rand(-3, 3), sc: rand(0.97, 1.03), ox: rand(-2, 2), oy: rand(-2, 2) };
+}
+// 同じ月の中でなるべく重ならず、隣のマスとも違う形を選ぶ
+function pickPattern(marks, cells, k, avoid) {
+  const n = MARKS.marks.length;
+  const cell = cells.find(x => x.key === k);
+  const near = new Set();
+  for (const x of cells) {
+    if (x.key !== k && marks[x.key] && Math.abs(x.c - cell.c) <= 1 && Math.abs(x.r - cell.r) <= 1) near.add(marks[x.key].p);
+  }
+  const used = new Array(n).fill(0);
+  for (const [kk, v] of Object.entries(marks)) if (kk !== k) used[v.p]++;
+  let cand = [...Array(n).keys()].filter(p => p !== avoid && !near.has(p));
+  if (!cand.length) cand = [...Array(n).keys()].filter(p => p !== avoid);
+  const min = Math.min(...cand.map(p => used[p]));
+  cand = cand.filter(p => used[p] === min);
+  return cand[Math.floor(Math.random() * cand.length)];
+}
+function setMark(marks, cells, k, avoid) {
+  marks[k] = jitter(pickPattern(marks, cells, k, avoid));
+}
+
+// 初めて開く月: カレンダーに出ている月曜(前後の月のマスも含めて)すべてに休を付ける。
+// あわせて、前の月のカレンダーで印を付けた続きの休みも入れておく
+function initMonth(y, m) {
+  const cells = gridDates(y, m);
+  const marks = {};
+  const prev = store.months[mkey(m === 1 ? y - 1 : y, m === 1 ? 12 : m - 1)];
+  for (const x of cells) {
+    const regular = REGULAR_CLOSED.includes(x.date.getDay());
+    const carried = x.inMonth && prev && prev.marks[x.key];
+    if (regular || carried) setMark(marks, cells, x.key);
+  }
+  return { marks };
+}
+function monthState(y, m) {
+  const k = mkey(y, m);
+  if (!store.months[k]) { store.months[k] = initMonth(y, m); save(); }
+  return store.months[k];
+}
+
+// ---- 描画 ----
+const canvas = document.getElementById('cal');
+const ctx = canvas.getContext('2d');
+let tinted = [];
+let logo = null;
+
+// グレースケールの画像(明るさ = 濃さ)を、指定の色で塗った透過画像にする
+function tint(src, color) {
+  return new Promise((ok, ng) => {
+    const img = new Image();
+    img.onload = () => {
+      const c = document.createElement('canvas');
+      c.width = img.width; c.height = img.height;
+      const g = c.getContext('2d');
+      g.drawImage(img, 0, 0);
+      const d = g.getImageData(0, 0, c.width, c.height);
+      const [r, gg, b] = [1, 3, 5].map(i => parseInt(color.substr(i, 2), 16));
+      for (let i = 0; i < d.data.length; i += 4) {
+        const a = d.data[i];
+        d.data[i] = r; d.data[i + 1] = gg; d.data[i + 2] = b; d.data[i + 3] = a;
+      }
+      g.putImageData(d, 0, 0);
+      ok(c);
+    };
+    img.onerror = ng;
+    img.src = src;
+  });
+}
+const prepareMarks = () => Promise.all(MARKS.marks.map(mk => tint(mk.src, COLOR.ink)));
+
+// 横方向だけ sx 倍にして文字を書く
+function textX(s, x, y, sx, align) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.scale(sx, 1);
+  ctx.textAlign = align;
+  ctx.fillText(s, 0, 0);
+  ctx.restore();
+}
+
+function dayColor(x, hol) {
+  const wd = x.date.getDay();
+  if (wd === 0 || hol) return COLOR.sun;
+  if (wd === 6) return COLOR.sat;
+  return x.inMonth ? COLOR.text : COLOR.other;
+}
+
+function draw(y, m) {
+  const st = monthState(y, m);
+  const cells = gridDates(y, m);
+  ctx.setTransform(1, 0, 0, 1, 0, 0);
+  ctx.globalCompositeOperation = 'source-over';
+  ctx.fillStyle = '#fff';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.setTransform(K, 0, 0, K, 0, 0);
+  ctx.textBaseline = 'alphabetic';
+
+  // 見出し: 大きな月の数字＋英語の月名、右に西暦と令和
+  // (サンプルの印刷物は英字だけ横幅が違うので、横方向に伸縮して合わせる)
+  ctx.fillStyle = COLOR.text;
+  ctx.font = `400 69.3px ${LATIN}`;
+  const big = String(m);
+  textX(big, 19.6, 99.5, 1, 'left');
+  const bigW = ctx.measureText(big).width;
+  ctx.font = `400 26.7px ${LATIN}`;
+  textX(MONTH_EN[m - 1], 19.6 + bigW - 0.8, 66.1, 0.913, 'left');
+  ctx.font = `400 21px ${LATIN}`;
+  textX(String(y), 917.8, 62, 1.15, 'right');
+  ctx.font = `500 15.5px ${JP}`;
+  textX(`令和${y - 2018}年`, 890, 79.2, 1, 'center');
+
+  // 曜日
+  ctx.font = `400 15.6px ${LATIN}`;
+  WEEK.forEach((w, c) => {
+    ctx.fillStyle = c === 0 ? COLOR.sun : c === 6 ? COLOR.sat : COLOR.text;
+    textX(w, G.x0 + c * G.cp + G.w / 2, 121.7, 0.95, 'center');
+  });
+
+  // 罫線(列ごとに分かれた横線だけ)
+  ctx.strokeStyle = COLOR.rule;
+  ctx.lineWidth = 1.3;
+  ctx.beginPath();
+  for (let k = 0; k <= 6; k++) {
+    const yy = G.y0 + k * G.rp;
+    for (let c = 0; c < 7; c++) {
+      ctx.moveTo(G.x0 + c * G.cp, yy);
+      ctx.lineTo(G.x0 + c * G.cp + G.w, yy);
+    }
+  }
+  ctx.stroke();
+
+  // 日付
+  for (const x of cells) {
+    const cx = G.x0 + x.c * G.cp, cy = G.y0 + x.r * G.rp;
+    const hol = holidayName(x.date);
+    ctx.fillStyle = dayColor(x, hol);
+    const s = String(x.date.getDate());
+    if (x.inMonth) {
+      ctx.textAlign = 'center';
+      ctx.font = `400 31.6px ${LATIN}`;
+      ctx.fillText(s, cx + 18.6, cy + 31.2);
+      if (hol) {
+        const half = ctx.measureText(s).width / 2;
+        ctx.textAlign = 'left';
+        ctx.font = `400 9.5px ${JP}`;
+        ctx.fillText(hol, cx + 18.6 + half + 2.9, cy + 29.7);
+      }
+    } else {
+      ctx.textAlign = 'left';
+      ctx.font = `400 19.6px ${LATIN}`;
+      ctx.fillText(s, cx + 3.3, cy + 22.5);
+    }
+  }
+
+  // 店名ロゴと住所・電話番号(最下段の罫線の下)
+  if (logo) ctx.drawImage(logo, FOOTER.logo.x, FOOTER.logo.y, FOOTER.logo.w, FOOTER.logo.h);
+  ctx.fillStyle = COLOR.footer;
+  ctx.textAlign = 'left';
+  ctx.font = `400 ${FOOTER.text.size}px ${JP}`;
+  for (const l of FOOTER.text.lines) ctx.fillText(l.text, l.x, l.y);
+
+  // 休マーク(マーカーのインクらしく、下の文字が透けるように乗算で重ねる)
+  ctx.globalCompositeOperation = 'multiply';
+  for (const x of cells) {
+    const v = st.marks[x.key];
+    if (!v || !tinted[v.p]) continue;
+    const mk = MARKS.marks[v.p];
+    const cx = G.x0 + x.c * G.cp + mk.dx + mk.w / 2 + v.ox;
+    const cy = G.y0 + x.r * G.rp + mk.dy + mk.h / 2 + v.oy;
+    ctx.save();
+    ctx.translate(cx, cy);
+    ctx.rotate(v.rot * Math.PI / 180);
+    ctx.scale(v.sc, v.sc);
+    ctx.drawImage(tinted[v.p], -mk.w / 2, -mk.h / 2, mk.w, mk.h);
+    ctx.restore();
+  }
+  ctx.globalCompositeOperation = 'source-over';
+  refreshBlob();
+}
+
+// ---- 画面 ----
+const $y = document.getElementById('year');
+const $m = document.getElementById('month');
+const now = new Date();
+const next = new Date(now.getFullYear(), now.getMonth() + 1, 1);
+for (let yy = now.getFullYear() - 1; yy <= now.getFullYear() + 2; yy++) $y.add(new Option(yy, yy));
+for (let mm = 1; mm <= 12; mm++) $m.add(new Option(mm, mm));
+$y.value = next.getFullYear();
+$m.value = next.getMonth() + 1;
+const cur = () => [Number($y.value), Number($m.value)];
+const render = () => draw(...cur());
+$y.addEventListener('change', render);
+$m.addEventListener('change', render);
+
+canvas.addEventListener('click', ev => {
+  const rect = canvas.getBoundingClientRect();
+  const bx = (ev.clientX - rect.left) / rect.width * BASE.W;
+  const by = (ev.clientY - rect.top) / rect.height * BASE.H;
+  const gap = G.cp - G.w;
+  const c = Math.floor((bx - G.x0 + gap / 2) / G.cp);
+  const r = Math.floor((by - G.y0) / G.rp);
+  if (c < 0 || c > 6 || r < 0 || r > 5) return;
+  const [y, m] = cur();
+  const st = monthState(y, m);
+  const cells = gridDates(y, m);
+  const x = cells[r * 7 + c];
+  if (st.marks[x.key]) {
+    st.lastP = st.lastP || {};
+    st.lastP[x.key] = st.marks[x.key].p;
+    delete st.marks[x.key];
+  } else {
+    setMark(st.marks, cells, x.key, st.lastP && st.lastP[x.key]);
+  }
+  save();
+  render();
+});
+
+document.getElementById('redraw').addEventListener('click', () => {
+  const [y, m] = cur();
+  const st = monthState(y, m);
+  const cells = gridDates(y, m);
+  const keys = Object.keys(st.marks);
+  const old = Object.fromEntries(keys.map(k => [k, st.marks[k].p]));
+  for (const k of keys) delete st.marks[k];
+  for (const k of keys) setMark(st.marks, cells, k, old[k]);
+  save();
+  render();
+});
+
+document.getElementById('reset').addEventListener('click', () => {
+  const [y, m] = cur();
+  if (!confirm(`${y}年${m}月の印を、最初の状態(すべての月曜に休)に戻しますか?`)) return;
+  store.months[mkey(y, m)] = initMonth(y, m);
+  save();
+  render();
+});
+
+// ---- 書き出し ----
+// iOS の共有シートは、ボタンを押した直後に呼ばないと開かないので、画像は描くたびに作っておく
+let blob = null, blobTimer = 0;
+function refreshBlob() {
+  clearTimeout(blobTimer);
+  blob = null;
+  blobTimer = setTimeout(() => canvas.toBlob(b => { blob = b; }, 'image/png'), 120);
+}
+const blobNow = () => blob ? Promise.resolve(blob) : new Promise(ok => canvas.toBlob(ok, 'image/png'));
+const fileName = () => { const [y, m] = cur(); return `営業日カレンダー_${y}-${pad(m)}.png`; };
+
+function toast(msg) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.classList.add('show');
+  clearTimeout(toast.timer);
+  toast.timer = setTimeout(() => t.classList.remove('show'), 1800);
+}
+
+function download(b) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(b);
+  a.download = fileName();
+  document.body.appendChild(a);
+  a.click();
+  setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+}
+
+document.getElementById('share').addEventListener('click', async () => {
+  const b = blob || await blobNow();
+  const file = new File([b], fileName(), { type: 'image/png' });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    try { await navigator.share({ files: [file] }); }
+    catch (e) { if (e.name !== 'AbortError') toast('共有できませんでした'); }
+  } else {
+    download(b);
+    toast('画像を保存しました');
+  }
+});
+
+document.getElementById('copy').addEventListener('click', async () => {
+  try {
+    // Safari はクリップボードへの書き込みをボタン操作の中で同期的に始める必要がある
+    await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobNow() })]);
+    toast('コピーしました');
+  } catch (e) {
+    toast('この環境ではコピーできません');
+  }
+});
+
+// ---- 起動 ----
+prepareMarks().then(t => { tinted = t; render(); });
+tint(FOOTER.logo.src, COLOR.footer).then(c => { logo = c; render(); });
+Promise.all([
+  document.fonts.load('400 30px "KCal Sans"', '0'),
+  document.fonts.load('400 10px "KCal JP"', '日'),
+  document.fonts.load('500 15px "KCal JP"', '年'),
+]).then(render, render);
+</script>
+</body>
+</html>

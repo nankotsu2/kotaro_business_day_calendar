@@ -1,0 +1,11 @@
+# 作業中の一時ファイル
+~$*
+__pycache__/
+
+# 元の pptx は作成者名・会社名が埋め込まれるので公開しない
+*.pptx
+
+# 確認用・途中の出力(作り直せる)
+tools/check_*.png
+tools/marks/
+tools/fonts/
