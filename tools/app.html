@@ -84,7 +84,7 @@
     <label class="picker"><select id="year" aria-label="年"></select><span>年</span></label>
     <label class="picker"><select id="month" aria-label="月"></select><span>月</span></label>
   </div>
-  <div class="sheet"><canvas id="cal" width="1440" height="1104" aria-label="カレンダーのプレビュー。日付をタップすると休みの印が付きます"></canvas></div>
+  <div class="sheet"><canvas id="cal" width="1440" height="1098" aria-label="カレンダーのプレビュー。日付をタップすると休みの印が付きます"></canvas></div>
   <p class="hint">日付をタップすると「休」が付きます。もう一度タップで消えます。</p>
   <div class="actions">
     <button class="primary" id="share">共有・保存</button>
@@ -101,11 +101,9 @@
 'use strict';
 // 手書きの「休」マーク(tools/extract_marks.py で 10月・11月のスキャンから切り出したもの)
 const MARKS = /*__MARKS__*/null;
-// 店名ロゴ(黒い文字だけ)と住所・電話番号。tools/extract_logo.py が pptx の p.4・p.5 から作る
-const FOOTER = /*__FOOTER__*/null;
 
 // ---- 見た目の設定(基準座標 = 934×712。サンプルのスキャンを測った値) ----
-const BASE = { W: 934, H: 716 };
+const BASE = { W: 934, H: 712 };
 const G = MARKS.base;                 // 格子: x0 列の左端, cp 列の間隔, w 罫線の長さ, y0 見出しの罫線, rp 行の間隔
 const OUT_W = 1440;                   // 書き出し幅(Instagram 向け)
 const K = OUT_W / BASE.W;
@@ -118,7 +116,6 @@ const COLOR = {
   other: '#8E8E8E',
   rule: '#9C9C9C',
   ink: '#E84C55',
-  footer: '#000000',
 };
 const REGULAR_CLOSED = [1];           // 定休日の曜日(0=日 … 6=土)。月曜
 const WEEK = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -247,7 +244,6 @@ function monthState(y, m) {
 const canvas = document.getElementById('cal');
 const ctx = canvas.getContext('2d');
 let tinted = [];
-let logo = null;
 
 // グレースケールの画像(明るさ = 濃さ)を、指定の色で塗った透過画像にする
 function tint(src, color) {
@@ -356,13 +352,6 @@ function draw(y, m) {
       ctx.fillText(s, cx + 3.3, cy + 22.5);
     }
   }
-
-  // 店名ロゴと住所・電話番号(最下段の罫線の下)
-  if (logo) ctx.drawImage(logo, FOOTER.logo.x, FOOTER.logo.y, FOOTER.logo.w, FOOTER.logo.h);
-  ctx.fillStyle = COLOR.footer;
-  ctx.textAlign = 'left';
-  ctx.font = `400 ${FOOTER.text.size}px ${JP}`;
-  for (const l of FOOTER.text.lines) ctx.fillText(l.text, l.x, l.y);
 
   // 休マーク(マーカーのインクらしく、下の文字が透けるように乗算で重ねる)
   ctx.globalCompositeOperation = 'multiply';
@@ -492,7 +481,6 @@ document.getElementById('copy').addEventListener('click', async () => {
 
 // ---- 起動 ----
 prepareMarks().then(t => { tinted = t; render(); });
-tint(FOOTER.logo.src, COLOR.footer).then(c => { logo = c; render(); });
 Promise.all([
   document.fonts.load('400 30px "KCal Sans"', '0'),
   document.fonts.load('400 10px "KCal JP"', '日'),

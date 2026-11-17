@@ -30,7 +30,7 @@ def canvas_png(page):
 
 
 def wait_ready(page):
-    page.wait_for_function("document.fonts.status === 'loaded' && tinted.length === MARKS.marks.length && logo")
+    page.wait_for_function("document.fonts.status === 'loaded' && tinted.length === MARKS.marks.length")
     page.wait_for_timeout(300)
 
 
@@ -65,7 +65,7 @@ def main():
         def tap_cell(c, r):
             bx = 21.8 + c * 128.31 + 59
             by = 125.98 + r * 87.88 + 44
-            page.touchscreen.tap(box['x'] + bx / 934 * box['width'], box['y'] + by / 716 * box['height'])
+            page.touchscreen.tap(box['x'] + bx / 934 * box['width'], box['y'] + by / 712 * box['height'])
         tap_cell(2, 1)
         n1 = page.evaluate("Object.keys(monthState(...cur()).marks).length")
         tap_cell(2, 1)
